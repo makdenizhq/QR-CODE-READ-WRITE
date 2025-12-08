@@ -9,6 +9,19 @@ export const detectQRType = (data: string): QRType => {
   return QRType.TEXT;
 };
 
+// Helper to safely handle clipboard operations which might be blocked by browsers
+// if not triggered by explicit user interaction or if document lacks focus.
+const safeCopy = async (text: string) => {
+  if (!navigator.clipboard) return;
+  try {
+    // Attempt to focus window first if possible (helps in some iframe contexts)
+    if (window.focus) window.focus();
+    await navigator.clipboard.writeText(text);
+  } catch (err) {
+    console.warn("Clipboard write failed (likely due to lack of user gesture or focus):", err);
+  }
+};
+
 export const performAction = (data: string, type: QRType) => {
   console.log(`Performing action for ${type}: ${data}`);
   
@@ -16,7 +29,13 @@ export const performAction = (data: string, type: QRType) => {
     case QRType.URL:
       let url = data;
       if (data.startsWith('www.')) url = `https://${data}`;
-      window.open(url, '_blank');
+      // Open immediately
+      // Note: Some browsers might block popups here since this isn't a direct click event.
+      const newWindow = window.open(url, '_blank');
+      // Fallback if popup blocked: Redirect current window
+      if (!newWindow || newWindow.closed || typeof newWindow.closed == 'undefined') {
+         window.location.href = url;
+      }
       break;
 
     case QRType.EMAIL:
@@ -29,23 +48,25 @@ export const performAction = (data: string, type: QRType) => {
 
     case QRType.GEO:
       // geo:37.786971,-122.399677
-      // Open in Google Maps
       const coords = data.replace('geo:', '');
       window.open(`https://www.google.com/maps/search/?api=1&query=${coords}`, '_blank');
       break;
 
     case QRType.WIFI:
-      // Browsers cannot auto-connect to WiFi due to security.
-      // We will parse it and let the UI show a copy password option.
-      alert('WiFi Ağı bulundu. Şifreyi kopyalamak için panoya bakınız (Güvenlik nedeniyle tarayıcılar otomatik bağlanamaz).');
+      // Extract password assuming standard format: WIFI:T:WPA;S:MyNetwork;P:MyPass;;
+      const passMatch = data.match(/P:([^;]+)/);
+      if (passMatch && passMatch[1]) {
+        safeCopy(passMatch[1]);
+        // Stronger feedback for silent success
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+      }
+      // No alert, just silent copy and vibrate
       break;
 
     default:
-      // Text
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(data);
-        alert('Metin panoya kopyalandı.');
-      }
+      // Text - Copy immediately and silently
+      safeCopy(data);
+      if (navigator.vibrate) navigator.vibrate(100);
       break;
   }
 };

@@ -1,5 +1,5 @@
 {
-  "name": "Hızlı QR",
+  "name": "Fast QR",
   "description": "Hızlı QR okuma ve oluşturma aracı. Web, Konum, Email ve WiFi desteği.",
   "requestFramePermissions": [
     "camera"
