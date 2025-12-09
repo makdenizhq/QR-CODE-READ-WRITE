@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import jsQR from 'jsqr';
-import { AlertCircle, RefreshCcw, Zap, ZapOff } from 'lucide-react';
+import { AlertCircle, RefreshCcw, Zap, ZapOff, Volume2, VolumeX } from 'lucide-react';
 import { detectQRType, performAction } from '../utils/qrUtils';
 
 interface ScannerProps {
@@ -25,11 +25,15 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [hasTorch, setHasTorch] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  
+  // Feedback State
+  const [isMuted, setIsMuted] = useState(() => {
+    return localStorage.getItem('qr-muted') === 'true';
+  });
   
   const requestRef = useRef<number>(0);
   const detectorRef = useRef<BarcodeDetector | null>(null);
@@ -50,6 +54,11 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       if (torchOn) toggleTorch(false);
     }
   }, [active]);
+
+  // Persist Mute State
+  useEffect(() => {
+    localStorage.setItem('qr-muted', String(isMuted));
+  }, [isMuted]);
 
   // Initialize Native Barcode Detector
   useEffect(() => {
@@ -90,6 +99,30 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     }
   };
 
+  const playScanSound = () => {
+    if (isMuted) return;
+    try {
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1200, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.1);
+      
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+    } catch (e) {
+      console.error("Audio play failed", e);
+    }
+  };
+
   // Linear Interpolation helper
   const lerp = (start: number, end: number, factor: number) => {
     return start + (end - start) * factor;
@@ -97,14 +130,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
 
   // Check if a point is roughly inside the center scan box
   const isPointInFocusArea = (point: {x: number, y: number}, videoWidth: number, videoHeight: number) => {
-    // We define the focus area as the center 60% of the visible video
-    // Since we object-cover, we need to estimate the visible part.
-    // However, for simplicity and robustness in this loop, we can check 
-    // if the point is within the center 50-60% of the VIDEO frame.
-    // This is because the user centers the camera on the code.
-    
-    // A more aggressive crop for the "Blur" effect logic:
-    const marginX = videoWidth * 0.20; // 20% margin
+    const marginX = videoWidth * 0.20; 
     const marginY = videoHeight * 0.20;
     
     return (
@@ -123,7 +149,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       currentCornersRef.current = points;
     } else {
       currentCornersRef.current = currentCornersRef.current.map((p, i) => ({
-        x: lerp(p.x, points[i].x, 0.4), // Faster snap
+        x: lerp(p.x, points[i].x, 0.4), 
         y: lerp(p.y, points[i].y, 0.4)
       }));
     }
@@ -136,12 +162,10 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.lineWidth = lineWidth;
-    
-    // Shadow for contrast
     ctx.shadowColor = "rgba(0,0,0,0.8)";
     ctx.shadowBlur = 10;
 
-    // 1. Top-Left (Red)
+    // Google Colors
     ctx.strokeStyle = "#EA4335"; 
     ctx.beginPath();
     ctx.moveTo(tl.x, tl.y + cornerLen);
@@ -149,7 +173,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(tl.x + cornerLen, tl.y);
     ctx.stroke();
 
-    // 2. Top-Right (Blue)
     ctx.strokeStyle = "#4285F4";
     ctx.beginPath();
     ctx.moveTo(tr.x - cornerLen, tr.y);
@@ -157,7 +180,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(tr.x, tr.y + cornerLen);
     ctx.stroke();
 
-    // 3. Bottom-Right (Green)
     ctx.strokeStyle = "#34A853";
     ctx.beginPath();
     ctx.moveTo(br.x, br.y - cornerLen);
@@ -165,7 +187,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(br.x - cornerLen, br.y);
     ctx.stroke();
 
-    // 4. Bottom-Left (Yellow)
     ctx.strokeStyle = "#FBBC04";
     ctx.beginPath();
     ctx.moveTo(bl.x + cornerLen, bl.y);
@@ -203,7 +224,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
             const barcodes = await detectorRef.current.detect(video);
             if (barcodes.length > 0) {
               const code = barcodes[0];
-              // Check if code is roughly central
               const center = {
                 x: (code.cornerPoints[0].x + code.cornerPoints[2].x) / 2,
                 y: (code.cornerPoints[0].y + code.cornerPoints[2].y) / 2
@@ -260,18 +280,23 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           if (!isSameCode || isCooldownOver) {
              lastScannedRef.current = rawData;
              lastScanTimeRef.current = now;
-             if (navigator.vibrate) navigator.vibrate(50);
+             
+             // FEEDBACK: Sound & Vibration
+             if (!isMuted) {
+                if (navigator.vibrate) navigator.vibrate([50, 50, 50]); // Distinct pattern
+                playScanSound();
+             }
+             
              performAction(rawData, detectQRType(rawData));
           }
         } else {
-          // If lost tracking, reset corners ref so next one snaps
           currentCornersRef.current = null;
         }
       }
     }
     
     requestRef.current = requestAnimationFrame(scanFrame);
-  }, []);
+  }, [isMuted]); // Re-create loop if mute setting changes to capture new state
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -354,7 +379,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
       if (stream) {
           const track = stream.getVideoTracks()[0];
-          if (track) track.stop(); // Just stop the track
+          if (track) track.stop();
       }
       if (videoRef.current) videoRef.current.srcObject = null;
     };
@@ -392,7 +417,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
             />
           </div>
 
-          {/* Blur Overlay & Static Frame Layer (No Mirror) */}
+          {/* Blur Overlay & Static Frame Layer */}
           <div className="absolute inset-0 z-10 pointer-events-none">
              {/* Darkened Blur Overlay using SVG Mask */}
              <div className="absolute inset-0 w-full h-full">
@@ -417,37 +442,43 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
 
              {/* Static Google Colors Frame (Idle State) */}
              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-[280px] h-[280px] relative">
-                    {/* Only show this static frame if NOT tracking (optional, but keeping it as a guide helps) 
-                        Actually, blending it with the tracking animation is smoother if we always show guide
-                        or hide it when tracking. For simplicity, we keep it as the 'search area' indicator.
-                    */}
-                    
-                    {/* Top Left - Red */}
+                <div className="w-[280px] h-[280px] relative opacity-50">
                     <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-[#EA4335] rounded-tl-xl"></div>
-                    {/* Top Right - Blue */}
                     <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-[#4285F4] rounded-tr-xl"></div>
-                    {/* Bottom Right - Green */}
                     <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-[#34A853] rounded-br-xl"></div>
-                    {/* Bottom Left - Yellow */}
                     <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-[#FBBC04] rounded-bl-xl"></div>
                 </div>
              </div>
           </div>
           
-          {/* Torch Button - High Z-Index to be clickable */}
-          {hasTorch && (
-            <button
-              onClick={() => toggleTorch()}
-              className={`absolute top-8 right-6 p-3 rounded-full backdrop-blur-md transition-all z-50 shadow-xl border border-white/10 ${
-                torchOn 
-                  ? 'bg-yellow-400 text-black shadow-yellow-400/50' 
-                  : 'bg-black/50 text-white hover:bg-black/70'
-              }`}
-            >
-              {torchOn ? <ZapOff className="w-8 h-8" /> : <Zap className="w-8 h-8" />}
-            </button>
-          )}
+          {/* Top Controls Container */}
+          <div className="absolute top-8 left-0 right-0 px-6 flex justify-between z-50 pointer-events-none">
+             {/* Sound Toggle - Left */}
+             <button
+               onClick={() => setIsMuted(!isMuted)}
+               className={`p-3 rounded-full backdrop-blur-md transition-all shadow-xl border pointer-events-auto ${
+                 isMuted 
+                   ? 'bg-black/50 text-white/70 border-white/10' 
+                   : 'bg-white text-black border-white shadow-white/20'
+               }`}
+             >
+               {isMuted ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
+             </button>
+
+             {/* Torch Button - Right */}
+             {hasTorch && (
+                <button
+                  onClick={() => toggleTorch()}
+                  className={`p-3 rounded-full backdrop-blur-md transition-all shadow-xl border pointer-events-auto ${
+                    torchOn 
+                      ? 'bg-yellow-400 text-black border-yellow-300 shadow-yellow-400/50' 
+                      : 'bg-black/50 text-white border-white/10 hover:bg-black/70'
+                  }`}
+                >
+                  {torchOn ? <ZapOff className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
+                </button>
+             )}
+          </div>
         </>
       )}
     </div>

@@ -1,6 +1,7 @@
 export enum AppTab {
   SCAN = 'scan',
-  GENERATE = 'generate'
+  GENERATE = 'generate',
+  INTERCOM = 'intercom'
 }
 
 export enum QRType {
