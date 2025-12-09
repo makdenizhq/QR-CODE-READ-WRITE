@@ -25,6 +25,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [hasTorch, setHasTorch] = useState(false);
@@ -45,6 +46,8 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     activeRef.current = active;
     if (!active) {
       lastScannedRef.current = null;
+      // Turn off torch when leaving tab
+      if (torchOn) toggleTorch(false);
     }
   }, [active]);
 
@@ -69,16 +72,17 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     }
   }, []);
 
-  const toggleTorch = async () => {
+  const toggleTorch = async (forceState?: boolean) => {
     const video = videoRef.current;
     if (video && video.srcObject) {
       const track = (video.srcObject as MediaStream).getVideoTracks()[0];
       if (track) {
         try {
+           const newState = forceState !== undefined ? forceState : !torchOn;
            await track.applyConstraints({
-             advanced: [{ torch: !torchOn }]
+             advanced: [{ torch: newState }]
            } as any);
-           setTorchOn(!torchOn);
+           setTorchOn(newState);
         } catch (e) {
           console.error("Torch toggle failed", e);
         }
@@ -91,38 +95,53 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     return start + (end - start) * factor;
   };
 
+  // Check if a point is roughly inside the center scan box
+  const isPointInFocusArea = (point: {x: number, y: number}, videoWidth: number, videoHeight: number) => {
+    // We define the focus area as the center 60% of the visible video
+    // Since we object-cover, we need to estimate the visible part.
+    // However, for simplicity and robustness in this loop, we can check 
+    // if the point is within the center 50-60% of the VIDEO frame.
+    // This is because the user centers the camera on the code.
+    
+    // A more aggressive crop for the "Blur" effect logic:
+    const marginX = videoWidth * 0.20; // 20% margin
+    const marginY = videoHeight * 0.20;
+    
+    return (
+      point.x > marginX && 
+      point.x < (videoWidth - marginX) &&
+      point.y > marginY &&
+      point.y < (videoHeight - marginY)
+    );
+  };
+
   const drawLensCorners = (ctx: CanvasRenderingContext2D, points: {x: number, y: number}[]) => {
     if (points.length < 4) return;
 
-    // Use a factor of 0.3 for smooth but responsive tracking
-    // If currentCornersRef is null, snap immediately.
+    // Smooth Tracking
     if (!currentCornersRef.current) {
       currentCornersRef.current = points;
     } else {
       currentCornersRef.current = currentCornersRef.current.map((p, i) => ({
-        x: lerp(p.x, points[i].x, 0.3),
-        y: lerp(p.y, points[i].y, 0.3)
+        x: lerp(p.x, points[i].x, 0.4), // Faster snap
+        y: lerp(p.y, points[i].y, 0.4)
       }));
     }
 
     const [tl, tr, br, bl] = currentCornersRef.current;
     
-    // Google Lens Style Dimensions
-    const cornerLen = 30;
-    const lineWidth = 6;
-    const cornerRadius = 6; // For rounded joins
+    const cornerLen = 40;
+    const lineWidth = 8;
 
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.lineWidth = lineWidth;
     
-    // Add a subtle shadow/glow for better visibility
-    ctx.shadowColor = "rgba(0,0,0,0.5)";
-    ctx.shadowBlur = 4;
-    ctx.shadowOffsetX = 1;
-    ctx.shadowOffsetY = 1;
+    // Shadow for contrast
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 10;
 
-    // 1. Top-Left (Google Red)
+    // 1. Top-Left (Red)
     ctx.strokeStyle = "#EA4335"; 
     ctx.beginPath();
     ctx.moveTo(tl.x, tl.y + cornerLen);
@@ -130,7 +149,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(tl.x + cornerLen, tl.y);
     ctx.stroke();
 
-    // 2. Top-Right (Google Blue)
+    // 2. Top-Right (Blue)
     ctx.strokeStyle = "#4285F4";
     ctx.beginPath();
     ctx.moveTo(tr.x - cornerLen, tr.y);
@@ -138,7 +157,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(tr.x, tr.y + cornerLen);
     ctx.stroke();
 
-    // 3. Bottom-Right (Google Green)
+    // 3. Bottom-Right (Green)
     ctx.strokeStyle = "#34A853";
     ctx.beginPath();
     ctx.moveTo(br.x, br.y - cornerLen);
@@ -146,7 +165,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(br.x - cornerLen, br.y);
     ctx.stroke();
 
-    // 4. Bottom-Left (Google Yellow)
+    // 4. Bottom-Left (Yellow)
     ctx.strokeStyle = "#FBBC04";
     ctx.beginPath();
     ctx.moveTo(bl.x + cornerLen, bl.y);
@@ -154,37 +173,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(bl.x, bl.y - cornerLen);
     ctx.stroke();
     
-    // Reset shadow
     ctx.shadowColor = "transparent";
-  };
-
-  const drawIdleState = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    // Reset smoothed corners so next find snaps instantly
-    currentCornersRef.current = null;
-
-    const size = Math.min(width, height) * 0.55;
-    const x = (width - size) / 2;
-    const y = (height - size) / 2;
-    const len = 30;
-
-    // Breathing animation
-    const time = Date.now() / 1000;
-    const alpha = 0.6 + (Math.sin(time * 3) * 0.2); 
-
-    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-    ctx.lineWidth = 4;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    
-    // White bracket frame
-    // TL
-    ctx.beginPath(); ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y); ctx.stroke();
-    // TR
-    ctx.beginPath(); ctx.moveTo(x + size - len, y); ctx.lineTo(x + size, y); ctx.lineTo(x + size, y + len); ctx.stroke();
-    // BR
-    ctx.beginPath(); ctx.moveTo(x + size, y + size - len); ctx.lineTo(x + size, y + size); ctx.lineTo(x + size - len, y + size); ctx.stroke();
-    // BL
-    ctx.beginPath(); ctx.moveTo(x + len, y + size); ctx.lineTo(x, y + size); ctx.lineTo(x, y + size - len); ctx.stroke();
   };
   
   const scanFrame = useCallback(async () => {
@@ -213,9 +202,18 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           try {
             const barcodes = await detectorRef.current.detect(video);
             if (barcodes.length > 0) {
-              foundCode = true;
-              rawData = barcodes[0].rawValue;
-              points = barcodes[0].cornerPoints;
+              const code = barcodes[0];
+              // Check if code is roughly central
+              const center = {
+                x: (code.cornerPoints[0].x + code.cornerPoints[2].x) / 2,
+                y: (code.cornerPoints[0].y + code.cornerPoints[2].y) / 2
+              };
+              
+              if (isPointInFocusArea(center, video.videoWidth, video.videoHeight)) {
+                foundCode = true;
+                rawData = code.rawValue;
+                points = code.cornerPoints;
+              }
             }
           } catch (err) {}
         }
@@ -233,14 +231,21 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
              const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
              
              if (code && code.data) {
-               foundCode = true;
-               rawData = code.data;
-               points = [
-                 code.location.topLeftCorner,
-                 code.location.topRightCorner,
-                 code.location.bottomRightCorner,
-                 code.location.bottomLeftCorner
-               ];
+               const center = {
+                 x: (code.location.topLeftCorner.x + code.location.bottomRightCorner.x) / 2,
+                 y: (code.location.topLeftCorner.y + code.location.bottomRightCorner.y) / 2
+               };
+
+               if (isPointInFocusArea(center, video.videoWidth, video.videoHeight)) {
+                 foundCode = true;
+                 rawData = code.data;
+                 points = [
+                   code.location.topLeftCorner,
+                   code.location.topRightCorner,
+                   code.location.bottomRightCorner,
+                   code.location.bottomLeftCorner
+                 ];
+               }
              }
            }
         }
@@ -259,7 +264,8 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
              performAction(rawData, detectQRType(rawData));
           }
         } else {
-          drawIdleState(ctx, canvas.width, canvas.height);
+          // If lost tracking, reset corners ref so next one snaps
+          currentCornersRef.current = null;
         }
       }
     }
@@ -281,12 +287,10 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
 
       try {
         setError(null);
-        // Default to environment (rear) camera
-        // Note: We generally don't mirror rear cameras as it makes aiming difficult
         const constraints = { 
             video: { 
                 facingMode: "environment", 
-                width: { ideal: 1920 }, // Request higher res for clarity
+                width: { ideal: 1920 },
                 height: { ideal: 1080 } 
             },
             audio: false
@@ -295,9 +299,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
         try {
            stream = await navigator.mediaDevices.getUserMedia(constraints);
         } catch (firstErr: any) {
-           if (firstErr.name === 'NotAllowedError' || firstErr.name === 'PermissionDeniedError') {
-             throw firstErr;
-           }
            console.warn("Falling back to default camera");
            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         }
@@ -311,11 +312,12 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           videoRef.current.srcObject = stream;
           videoRef.current.setAttribute("playsinline", "true");
           
-          // Check for torch capability
           const track = stream.getVideoTracks()[0];
           const capabilities = track.getCapabilities ? track.getCapabilities() : {};
           if ('torch' in capabilities) {
             setHasTorch(true);
+          } else {
+            setHasTorch(false);
           }
 
           const onMetadata = async () => {
@@ -335,7 +337,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
         }
       } catch (err: any) {
         if (!isMounted) return;
-        setError("Kamera başlatılamadı veya izin verilmedi.");
+        setError("Kamera başlatılamadı. İzinleri kontrol edin.");
       }
     };
 
@@ -351,12 +353,8 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       isMounted = false;
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
       if (stream) {
-          // Turn off torch before stopping
           const track = stream.getVideoTracks()[0];
-          if (track) {
-              track.applyConstraints({ advanced: [{ torch: false }] } as any).catch(() => {});
-          }
-          stream.getTracks().forEach(t => t.stop());
+          if (track) track.stop(); // Just stop the track
       }
       if (videoRef.current) videoRef.current.srcObject = null;
     };
@@ -380,31 +378,74 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
         </div>
       ) : (
         <>
-          <video 
-            ref={videoRef} 
-            className="absolute inset-0 w-full h-full object-cover" 
-            // Note: Standard rear-camera behavior is NOT mirrored. 
-            // If the user flips to front camera (not implemented here but possible), we would apply scale-x-[-1]
-            style={{ transform: 'none' }}
-            playsInline 
-            muted 
-          />
-          <canvas 
-            ref={canvasRef} 
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          />
+          {/* Video & Tracking Layer - Scaled X for Mirror Effect */}
+          <div className="absolute inset-0 w-full h-full transform scale-x-[-1]">
+             <video 
+              ref={videoRef} 
+              className="absolute inset-0 w-full h-full object-cover" 
+              playsInline 
+              muted 
+            />
+            <canvas 
+              ref={canvasRef} 
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+          </div>
+
+          {/* Blur Overlay & Static Frame Layer (No Mirror) */}
+          <div className="absolute inset-0 z-10 pointer-events-none">
+             {/* Darkened Blur Overlay using SVG Mask */}
+             <div className="absolute inset-0 w-full h-full">
+                <svg width="100%" height="100%" className="absolute inset-0">
+                  <defs>
+                    <mask id="scan-mask">
+                      <rect width="100%" height="100%" fill="white" />
+                      {/* The Hole */}
+                      <rect x="50%" y="50%" width="280" height="280" transform="translate(-140, -140)" fill="black" rx="20" />
+                    </mask>
+                  </defs>
+                  {/* The dark blurred layer */}
+                  <rect 
+                    width="100%" 
+                    height="100%" 
+                    fill="rgba(0,0,0,0.6)" 
+                    mask="url(#scan-mask)" 
+                    style={{ backdropFilter: 'blur(4px)' }} 
+                  />
+                </svg>
+             </div>
+
+             {/* Static Google Colors Frame (Idle State) */}
+             <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-[280px] h-[280px] relative">
+                    {/* Only show this static frame if NOT tracking (optional, but keeping it as a guide helps) 
+                        Actually, blending it with the tracking animation is smoother if we always show guide
+                        or hide it when tracking. For simplicity, we keep it as the 'search area' indicator.
+                    */}
+                    
+                    {/* Top Left - Red */}
+                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-[#EA4335] rounded-tl-xl"></div>
+                    {/* Top Right - Blue */}
+                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-[#4285F4] rounded-tr-xl"></div>
+                    {/* Bottom Right - Green */}
+                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-[#34A853] rounded-br-xl"></div>
+                    {/* Bottom Left - Yellow */}
+                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-[#FBBC04] rounded-bl-xl"></div>
+                </div>
+             </div>
+          </div>
           
-          {/* Torch Button */}
+          {/* Torch Button - High Z-Index to be clickable */}
           {hasTorch && (
             <button
-              onClick={toggleTorch}
-              className={`absolute top-6 right-6 p-4 rounded-full backdrop-blur-md transition-all z-20 shadow-lg ${
+              onClick={() => toggleTorch()}
+              className={`absolute top-8 right-6 p-3 rounded-full backdrop-blur-md transition-all z-50 shadow-xl border border-white/10 ${
                 torchOn 
-                  ? 'bg-yellow-400/90 text-black shadow-yellow-400/50' 
-                  : 'bg-black/40 text-white hover:bg-black/60'
+                  ? 'bg-yellow-400 text-black shadow-yellow-400/50' 
+                  : 'bg-black/50 text-white hover:bg-black/70'
               }`}
             >
-              {torchOn ? <ZapOff className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
+              {torchOn ? <ZapOff className="w-8 h-8" /> : <Zap className="w-8 h-8" />}
             </button>
           )}
         </>
