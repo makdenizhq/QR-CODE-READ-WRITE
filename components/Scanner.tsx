@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import jsQR from 'jsqr';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, RefreshCcw, Zap, ZapOff } from 'lucide-react';
 import { detectQRType, performAction } from '../utils/qrUtils';
 
 interface ScannerProps {
@@ -24,10 +24,11 @@ declare global {
 const Scanner: React.FC<ScannerProps> = ({ active }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Offscreen canvas for jsQR processing to avoid reading from main display canvas
   const processingCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  const [hasTorch, setHasTorch] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
   
   const requestRef = useRef<number>(0);
   const detectorRef = useRef<BarcodeDetector | null>(null);
@@ -36,6 +37,9 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   const activeRef = useRef(active);
   const lastScannedRef = useRef<string | null>(null);
   const lastScanTimeRef = useRef<number>(0);
+  
+  // Smooth tracking refs
+  const currentCornersRef = useRef<{x: number, y: number}[] | null>(null);
 
   useEffect(() => {
     activeRef.current = active;
@@ -60,25 +64,65 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     };
     initDetector();
     
-    // Initialize processing canvas once
     if (!processingCanvasRef.current) {
       processingCanvasRef.current = document.createElement('canvas');
     }
   }, []);
 
+  const toggleTorch = async () => {
+    const video = videoRef.current;
+    if (video && video.srcObject) {
+      const track = (video.srcObject as MediaStream).getVideoTracks()[0];
+      if (track) {
+        try {
+           await track.applyConstraints({
+             advanced: [{ torch: !torchOn }]
+           } as any);
+           setTorchOn(!torchOn);
+        } catch (e) {
+          console.error("Torch toggle failed", e);
+        }
+      }
+    }
+  };
+
+  // Linear Interpolation helper
+  const lerp = (start: number, end: number, factor: number) => {
+    return start + (end - start) * factor;
+  };
+
   const drawLensCorners = (ctx: CanvasRenderingContext2D, points: {x: number, y: number}[]) => {
     if (points.length < 4) return;
 
-    const [tl, tr, br, bl] = points;
-    // Made smaller and more refined
-    const lineWidth = 5; 
-    const cornerLen = 20;
+    // Use a factor of 0.3 for smooth but responsive tracking
+    // If currentCornersRef is null, snap immediately.
+    if (!currentCornersRef.current) {
+      currentCornersRef.current = points;
+    } else {
+      currentCornersRef.current = currentCornersRef.current.map((p, i) => ({
+        x: lerp(p.x, points[i].x, 0.3),
+        y: lerp(p.y, points[i].y, 0.3)
+      }));
+    }
+
+    const [tl, tr, br, bl] = currentCornersRef.current;
+    
+    // Google Lens Style Dimensions
+    const cornerLen = 30;
+    const lineWidth = 6;
+    const cornerRadius = 6; // For rounded joins
 
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.lineWidth = lineWidth;
+    
+    // Add a subtle shadow/glow for better visibility
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
 
-    // 1. Top-Left (Red)
+    // 1. Top-Left (Google Red)
     ctx.strokeStyle = "#EA4335"; 
     ctx.beginPath();
     ctx.moveTo(tl.x, tl.y + cornerLen);
@@ -86,7 +130,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(tl.x + cornerLen, tl.y);
     ctx.stroke();
 
-    // 2. Top-Right (Blue)
+    // 2. Top-Right (Google Blue)
     ctx.strokeStyle = "#4285F4";
     ctx.beginPath();
     ctx.moveTo(tr.x - cornerLen, tr.y);
@@ -94,7 +138,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(tr.x, tr.y + cornerLen);
     ctx.stroke();
 
-    // 3. Bottom-Right (Green)
+    // 3. Bottom-Right (Google Green)
     ctx.strokeStyle = "#34A853";
     ctx.beginPath();
     ctx.moveTo(br.x, br.y - cornerLen);
@@ -102,31 +146,37 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.lineTo(br.x - cornerLen, br.y);
     ctx.stroke();
 
-    // 4. Bottom-Left (Yellow)
+    // 4. Bottom-Left (Google Yellow)
     ctx.strokeStyle = "#FBBC04";
     ctx.beginPath();
     ctx.moveTo(bl.x + cornerLen, bl.y);
     ctx.lineTo(bl.x, bl.y);
     ctx.lineTo(bl.x, bl.y - cornerLen);
     ctx.stroke();
+    
+    // Reset shadow
+    ctx.shadowColor = "transparent";
   };
 
   const drawIdleState = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    // Reduced size to 50% for a smaller, more focused frame
-    const size = Math.min(width, height) * 0.5;
+    // Reset smoothed corners so next find snaps instantly
+    currentCornersRef.current = null;
+
+    const size = Math.min(width, height) * 0.55;
     const x = (width - size) / 2;
     const y = (height - size) / 2;
-    const len = 25; // Shorter lines for minimal look
+    const len = 30;
 
-    // Pulsing effect
+    // Breathing animation
     const time = Date.now() / 1000;
-    const alpha = 0.5 + (Math.sin(time * 4) * 0.3); 
+    const alpha = 0.6 + (Math.sin(time * 3) * 0.2); 
 
     ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
     ctx.lineWidth = 4;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-
+    
+    // White bracket frame
     // TL
     ctx.beginPath(); ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y); ctx.stroke();
     // TR
@@ -135,12 +185,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.beginPath(); ctx.moveTo(x + size, y + size - len); ctx.lineTo(x + size, y + size); ctx.lineTo(x + size - len, y + size); ctx.stroke();
     // BL
     ctx.beginPath(); ctx.moveTo(x + len, y + size); ctx.lineTo(x, y + size); ctx.lineTo(x, y + size - len); ctx.stroke();
-    
-    // Optional: Add a subtle center dot
-    ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.5})`;
-    ctx.beginPath();
-    ctx.arc(width/2, height/2, 2, 0, Math.PI * 2);
-    ctx.fill();
   };
   
   const scanFrame = useCallback(async () => {
@@ -164,7 +208,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
         let points: {x: number, y: number}[] = [];
         let rawData = "";
 
-        // 1. Try Native BarcodeDetector
+        // 1. Native BarcodeDetector
         if (detectorRef.current) {
           try {
             const barcodes = await detectorRef.current.detect(video);
@@ -173,12 +217,10 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
               rawData = barcodes[0].rawValue;
               points = barcodes[0].cornerPoints;
             }
-          } catch (err) {
-            // Ignore native errors
-          }
+          } catch (err) {}
         }
 
-        // 2. Fallback to jsQR
+        // 2. Fallback jsQR
         if (!foundCode && pCanvas) {
            if (pCanvas.width !== video.videoWidth || pCanvas.height !== video.videoHeight) {
              pCanvas.width = video.videoWidth;
@@ -203,7 +245,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
            }
         }
 
-        // VISUALS & ACTION
         if (foundCode && points.length > 0) {
           drawLensCorners(ctx, points);
 
@@ -214,10 +255,8 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           if (!isSameCode || isCooldownOver) {
              lastScannedRef.current = rawData;
              lastScanTimeRef.current = now;
-
              if (navigator.vibrate) navigator.vibrate(50);
-             const type = detectQRType(rawData);
-             performAction(rawData, type);
+             performAction(rawData, detectQRType(rawData));
           }
         } else {
           drawIdleState(ctx, canvas.width, canvas.height);
@@ -225,7 +264,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       }
     }
     
-    // Loop
     requestRef.current = requestAnimationFrame(scanFrame);
   }, []);
 
@@ -236,16 +274,32 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     const startCamera = async () => {
       if (!active) return;
 
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+         setError("Kamera desteklenmiyor (HTTPS gerekli).");
+         return;
+      }
+
       try {
         setError(null);
-        // Try environment camera first
+        // Default to environment (rear) camera
+        // Note: We generally don't mirror rear cameras as it makes aiming difficult
+        const constraints = { 
+            video: { 
+                facingMode: "environment", 
+                width: { ideal: 1920 }, // Request higher res for clarity
+                height: { ideal: 1080 } 
+            },
+            audio: false
+        };
+
         try {
-           stream = await navigator.mediaDevices.getUserMedia({ 
-             video: { facingMode: "environment", width: { ideal: 1920 } } 
-           });
-        } catch (firstErr) {
-           // Fallback to any camera
-           stream = await navigator.mediaDevices.getUserMedia({ video: true });
+           stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (firstErr: any) {
+           if (firstErr.name === 'NotAllowedError' || firstErr.name === 'PermissionDeniedError') {
+             throw firstErr;
+           }
+           console.warn("Falling back to default camera");
+           stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         }
         
         if (!isMounted) {
@@ -257,11 +311,17 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           videoRef.current.srcObject = stream;
           videoRef.current.setAttribute("playsinline", "true");
           
+          // Check for torch capability
+          const track = stream.getVideoTracks()[0];
+          const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+          if ('torch' in capabilities) {
+            setHasTorch(true);
+          }
+
           const onMetadata = async () => {
              if (isMounted && videoRef.current) {
                 try {
                   await videoRef.current.play();
-                  // Start the loop
                   if (requestRef.current) cancelAnimationFrame(requestRef.current);
                   requestRef.current = requestAnimationFrame(scanFrame);
                 } catch (e) {
@@ -271,17 +331,11 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           };
 
           videoRef.current.onloadedmetadata = onMetadata;
-          
-          if (videoRef.current.readyState >= 1) {
-            onMetadata();
-          }
+          if (videoRef.current.readyState >= 1) onMetadata();
         }
       } catch (err: any) {
         if (!isMounted) return;
-        console.error("Camera error", err);
-        let msg = "Kameraya erişilemedi.";
-        if (err.name === 'NotAllowedError') msg = "Lütfen kamera izni veriniz.";
-        setError(msg);
+        setError("Kamera başlatılamadı veya izin verilmedi.");
       }
     };
 
@@ -289,12 +343,21 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       startCamera();
     } else {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      setHasTorch(false);
+      setTorchOn(false);
     }
 
     return () => {
       isMounted = false;
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (stream) {
+          // Turn off torch before stopping
+          const track = stream.getVideoTracks()[0];
+          if (track) {
+              track.applyConstraints({ advanced: [{ torch: false }] } as any).catch(() => {});
+          }
+          stream.getTracks().forEach(t => t.stop());
+      }
       if (videoRef.current) videoRef.current.srcObject = null;
     };
   }, [active, scanFrame]);
@@ -306,13 +369,13 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       {error ? (
         <div className="text-center p-6 bg-neutral-900/90 rounded-xl border border-red-500/30 m-4 max-w-sm backdrop-blur-md relative z-50">
           <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <p className="text-white font-medium mb-2">Hata</p>
-          <p className="text-neutral-400 text-sm">{error}</p>
+          <p className="text-white mb-6">{error}</p>
           <button 
              onClick={() => window.location.reload()}
-             className="mt-6 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-sm text-white"
+             className="flex items-center justify-center gap-2 w-full px-4 py-3 bg-neutral-800 rounded-lg text-white"
           >
-            Tekrar Dene
+            <RefreshCcw className="w-4 h-4" />
+            <span>Yenile</span>
           </button>
         </div>
       ) : (
@@ -320,6 +383,9 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
           <video 
             ref={videoRef} 
             className="absolute inset-0 w-full h-full object-cover" 
+            // Note: Standard rear-camera behavior is NOT mirrored. 
+            // If the user flips to front camera (not implemented here but possible), we would apply scale-x-[-1]
+            style={{ transform: 'none' }}
             playsInline 
             muted 
           />
@@ -327,6 +393,20 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
             ref={canvasRef} 
             className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           />
+          
+          {/* Torch Button */}
+          {hasTorch && (
+            <button
+              onClick={toggleTorch}
+              className={`absolute top-6 right-6 p-4 rounded-full backdrop-blur-md transition-all z-20 shadow-lg ${
+                torchOn 
+                  ? 'bg-yellow-400/90 text-black shadow-yellow-400/50' 
+                  : 'bg-black/40 text-white hover:bg-black/60'
+              }`}
+            >
+              {torchOn ? <ZapOff className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
+            </button>
+          )}
         </>
       )}
     </div>
