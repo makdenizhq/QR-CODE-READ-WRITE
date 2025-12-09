@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bell, Key, BookOpen, Delete } from 'lucide-react';
+import { Bell, ArrowLeft, ArrowRight } from 'lucide-react';
 
 const Intercom: React.FC = () => {
   const [display, setDisplay] = useState("DAİRE NO GİRİNİZ");
@@ -74,11 +74,9 @@ const Intercom: React.FC = () => {
         setDisplay(num);
         setInput(num);
     } else {
-        if (input.length < 4) {
-            const newVal = input + num;
-            setInput(newVal);
-            setDisplay(newVal);
-        }
+        const newVal = input + num;
+        setInput(newVal);
+        setDisplay(newVal);
     }
   };
 
@@ -157,7 +155,7 @@ const Intercom: React.FC = () => {
                 {/* Scanlines */}
                 <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-0 bg-[length:100%_4px,3px_100%] pointer-events-none"></div>
                 
-                <span className="relative z-10 text-cyan-400 font-mono text-xl tracking-widest font-bold drop-shadow-[0_0_5px_rgba(34,211,238,0.8)] text-center px-2 animate-pulse">
+                <span className="relative z-10 text-cyan-400 font-mono text-xl tracking-widest font-bold drop-shadow-[0_0_5px_rgba(34,211,238,0.8)] text-center px-2 animate-pulse break-words w-full">
                     {display}
                 </span>
                 <span className="relative z-10 text-cyan-700/60 text-[10px] mt-1 tracking-[0.3em]">
@@ -171,9 +169,9 @@ const Intercom: React.FC = () => {
             
             {/* Top Function Buttons (3 Buttons) */}
             <div className="grid grid-cols-3 gap-4 mb-2">
-                <IntercomButton onClick={handleClear} icon={<BookOpen size={20}/>} label="REHBER" color="blue" />
-                <IntercomButton onClick={handleCall} icon={<Bell size={20}/>} label="ZİL" color="blue" />
-                <IntercomButton onClick={handleDoor} icon={<Key size={20}/>} label="KAPI" color="blue" />
+                <IntercomButton onClick={handleClear} icon={<ArrowLeft size={24}/>} label="" color="blue" />
+                <IntercomButton onClick={handleCall} icon={<Bell size={24}/>} label="ZİL" color="blue" />
+                <IntercomButton onClick={handleDoor} icon={<ArrowRight size={24}/>} label="" color="blue" />
             </div>
 
             {/* Numeric Keypad */}

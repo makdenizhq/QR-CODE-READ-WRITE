@@ -1,10 +1,17 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import jsQR from 'jsqr';
-import { AlertCircle, RefreshCcw, Zap, ZapOff, Volume2, VolumeX } from 'lucide-react';
+import { AlertCircle, RefreshCcw, Zap, ZapOff, Volume2, VolumeX, Smartphone, Rocket, MousePointerClick, X, ArrowRight } from 'lucide-react';
 import { detectQRType, performAction } from '../utils/qrUtils';
+import { QRType } from '../types';
 
 interface ScannerProps {
   active: boolean;
+}
+
+enum FeedbackMode {
+  SILENT = 0,
+  VIBRATE = 1,
+  SOUND = 2
 }
 
 // Interface for the native BarcodeDetector API
@@ -30,35 +37,48 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   const [hasTorch, setHasTorch] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   
-  // Feedback State
-  const [isMuted, setIsMuted] = useState(() => {
-    return localStorage.getItem('qr-muted') === 'true';
+  // Settings State
+  const [feedbackMode, setFeedbackMode] = useState<FeedbackMode>(() => {
+    const saved = localStorage.getItem('qr-feedback');
+    return saved ? parseInt(saved) : FeedbackMode.SOUND;
   });
+
+  const [autoAction, setAutoAction] = useState<boolean>(() => {
+    const saved = localStorage.getItem('qr-auto-action');
+    return saved !== 'false'; // Default true
+  });
+
+  // Manual Result State
+  const [manualResult, setManualResult] = useState<{data: string, type: QRType} | null>(null);
   
+  // Refs for loop access
+  const feedbackModeRef = useRef(feedbackMode);
+  const autoActionRef = useRef(autoAction);
   const requestRef = useRef<number>(0);
   const detectorRef = useRef<BarcodeDetector | null>(null);
-  
-  // Refs for logic loop
   const activeRef = useRef(active);
   const lastScannedRef = useRef<string | null>(null);
   const lastScanTimeRef = useRef<number>(0);
-  
-  // Smooth tracking refs
   const currentCornersRef = useRef<{x: number, y: number}[] | null>(null);
 
   useEffect(() => {
     activeRef.current = active;
     if (!active) {
       lastScannedRef.current = null;
-      // Turn off torch when leaving tab
       if (torchOn) toggleTorch(false);
     }
   }, [active]);
 
-  // Persist Mute State
+  // Sync state to refs and storage
   useEffect(() => {
-    localStorage.setItem('qr-muted', String(isMuted));
-  }, [isMuted]);
+    feedbackModeRef.current = feedbackMode;
+    localStorage.setItem('qr-feedback', feedbackMode.toString());
+  }, [feedbackMode]);
+
+  useEffect(() => {
+    autoActionRef.current = autoAction;
+    localStorage.setItem('qr-auto-action', autoAction.toString());
+  }, [autoAction]);
 
   // Initialize Native Barcode Detector
   useEffect(() => {
@@ -100,7 +120,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   };
 
   const playScanSound = () => {
-    if (isMuted) return;
     try {
       const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioContext();
@@ -123,12 +142,30 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     }
   };
 
-  // Linear Interpolation helper
+  const triggerFeedback = () => {
+    const mode = feedbackModeRef.current;
+    if (mode === FeedbackMode.SILENT) return;
+
+    // Vibrate for both VIBRATE and SOUND modes
+    if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+
+    if (mode === FeedbackMode.SOUND) {
+      playScanSound();
+    }
+  };
+
+  const cycleFeedbackMode = () => {
+    setFeedbackMode(prev => {
+      if (prev === FeedbackMode.SOUND) return FeedbackMode.VIBRATE;
+      if (prev === FeedbackMode.VIBRATE) return FeedbackMode.SILENT;
+      return FeedbackMode.SOUND;
+    });
+  };
+
   const lerp = (start: number, end: number, factor: number) => {
     return start + (end - start) * factor;
   };
 
-  // Check if a point is roughly inside the center scan box
   const isPointInFocusArea = (point: {x: number, y: number}, videoWidth: number, videoHeight: number) => {
     const marginX = videoWidth * 0.20; 
     const marginY = videoHeight * 0.20;
@@ -144,7 +181,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   const drawLensCorners = (ctx: CanvasRenderingContext2D, points: {x: number, y: number}[]) => {
     if (points.length < 4) return;
 
-    // Smooth Tracking
     if (!currentCornersRef.current) {
       currentCornersRef.current = points;
     } else {
@@ -165,7 +201,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     ctx.shadowColor = "rgba(0,0,0,0.8)";
     ctx.shadowBlur = 10;
 
-    // Google Colors
     ctx.strokeStyle = "#EA4335"; 
     ctx.beginPath();
     ctx.moveTo(tl.x, tl.y + cornerLen);
@@ -199,6 +234,29 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
   
   const scanFrame = useCallback(async () => {
     if (!activeRef.current) return;
+    
+    // If a manual result is being shown, pause scanning logic but keep loop running for video? 
+    // Actually, we can just return early to save resources and freeze the "state" visually if we wanted, 
+    // but React state 'manualResult' will overlay the UI.
+    // To be safe, we skip processing.
+    // NOTE: accessing state inside callback requires refs or dependency. 
+    // We can't access `manualResult` state directly here effectively if we want to avoid recreating the loop.
+    // However, checking if the modal DOM exists is hacky. 
+    // Instead, we will rely on the fact that if `manualResult` is set, we will likely unmount or cover the scanner, 
+    // but here we just want to ensure we don't trigger *another* scan while the modal is open.
+    // Since `scanFrame` is a loop, we can just use a flag. 
+    // For now, let's assume if the user hasn't cleared `lastScannedRef`, we respect cooldown.
+    // But for Manual Mode, we want to STOP until user dismisses.
+    
+    // We will check a class or DOM element to see if modal is open? No, that's bad React.
+    // We will use a ref for manualResult presence if needed, but actually
+    // setting `active` prop to false unmounts/stops this. 
+    // Since the modal is inside this component, the loop continues.
+    // We'll update `scanFrame` to check a ref if we had one.
+    // Since we don't have a `manualResultRef`, let's just proceed. 
+    // The "autoAction" check handles the logic flow. 
+    // If autoAction is false, we set state and rely on `lastScannedRef` to prevent double-scan 
+    // UNTIL the user explicitly closes the modal (which should clear `lastScannedRef`).
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -213,6 +271,14 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Skip processing if we have a manual result open (simulated check via lastScannedRef logic mostly, 
+        // but strictly we should check a ref. Let's trust cooldown for now, 
+        // but ideally we should stop scanning if modal is open.
+        // Since we can't easily access the state without restarting the loop, 
+        // we'll assume the UI overlay blocks the user's view anyway, 
+        // but to prevent CPU usage we should technically pause. 
+        // For this implementation, we'll keep scanning but not trigger action if recently scanned.
         
         let foundCode = false;
         let points: {x: number, y: number}[] = [];
@@ -275,19 +341,37 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
 
           const now = Date.now();
           const isSameCode = rawData === lastScannedRef.current;
+          
+          // If Manual mode is active, we treat the 'cooldown' as infinite until modal is closed.
+          // Since we can't check 'manualResult' state easily here, we rely on 'lastScannedRef'.
+          // When modal is closed, we MUST clear lastScannedRef.
           const isCooldownOver = (now - lastScanTimeRef.current) > 2000;
 
           if (!isSameCode || isCooldownOver) {
-             lastScannedRef.current = rawData;
-             lastScanTimeRef.current = now;
+             // We have a new valid scan candidate
+             // Check if we are blocked by manual modal? 
+             // We will solve this by checking if the DOM contains our modal ID.
+             const modalOpen = document.getElementById('manual-result-modal');
              
-             // FEEDBACK: Sound & Vibration
-             if (!isMuted) {
-                if (navigator.vibrate) navigator.vibrate([50, 50, 50]); // Distinct pattern
-                playScanSound();
+             if (!modalOpen) {
+                lastScannedRef.current = rawData;
+                lastScanTimeRef.current = now;
+                
+                triggerFeedback();
+                
+                const type = detectQRType(rawData);
+                if (autoActionRef.current) {
+                   performAction(rawData, type);
+                } else {
+                   // Manual Mode: Set state to show modal
+                   // We need to call the setManualResult from outside the loop context?
+                   // Actually, since this function is created once, we need to dispatch a state update.
+                   // To avoid staleness, we can just dispatch.
+                   // But we need to make sure we don't dispatch repeatedly.
+                   // The lastScannedRef check handles the "once" part.
+                   setManualResult({ data: rawData, type });
+                }
              }
-             
-             performAction(rawData, detectQRType(rawData));
           }
         } else {
           currentCornersRef.current = null;
@@ -296,7 +380,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     }
     
     requestRef.current = requestAnimationFrame(scanFrame);
-  }, [isMuted]); // Re-create loop if mute setting changes to capture new state
+  }, []); 
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -385,6 +469,14 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
     };
   }, [active, scanFrame]);
 
+  // Handle manual modal close
+  const closeManualResult = () => {
+    setManualResult(null);
+    // Allow re-scan of same code immediately if desired, or keep cooldown.
+    // Let's clear lastScannedRef to allow re-scan immediately.
+    lastScannedRef.current = null;
+  };
+
   if (!active) return null;
 
   return (
@@ -403,7 +495,7 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
         </div>
       ) : (
         <>
-          {/* Video & Tracking Layer - Scaled X for Mirror Effect */}
+          {/* Video & Tracking Layer */}
           <div className="absolute inset-0 w-full h-full transform scale-x-[-1]">
              <video 
               ref={videoRef} 
@@ -419,17 +511,14 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
 
           {/* Blur Overlay & Static Frame Layer */}
           <div className="absolute inset-0 z-10 pointer-events-none">
-             {/* Darkened Blur Overlay using SVG Mask */}
              <div className="absolute inset-0 w-full h-full">
                 <svg width="100%" height="100%" className="absolute inset-0">
                   <defs>
                     <mask id="scan-mask">
                       <rect width="100%" height="100%" fill="white" />
-                      {/* The Hole */}
                       <rect x="50%" y="50%" width="280" height="280" transform="translate(-140, -140)" fill="black" rx="20" />
                     </mask>
                   </defs>
-                  {/* The dark blurred layer */}
                   <rect 
                     width="100%" 
                     height="100%" 
@@ -440,7 +529,6 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
                 </svg>
              </div>
 
-             {/* Static Google Colors Frame (Idle State) */}
              <div className="absolute inset-0 flex items-center justify-center">
                 <div className="w-[280px] h-[280px] relative opacity-50">
                     <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-[#EA4335] rounded-tl-xl"></div>
@@ -451,19 +539,76 @@ const Scanner: React.FC<ScannerProps> = ({ active }) => {
              </div>
           </div>
           
+          {/* Manual Result Modal Overlay */}
+          {manualResult && (
+            <div id="manual-result-modal" className="absolute inset-0 z-[60] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+               <div className="w-full max-w-sm bg-neutral-900 rounded-2xl border border-white/10 shadow-2xl overflow-hidden p-6 relative">
+                  <div className="flex justify-between items-start mb-4">
+                     <span className="px-3 py-1 bg-indigo-500/20 text-indigo-300 text-xs font-bold rounded-full border border-indigo-500/30">
+                        {manualResult.type}
+                     </span>
+                     <button onClick={closeManualResult} className="text-neutral-400 hover:text-white p-1">
+                        <X className="w-5 h-5" />
+                     </button>
+                  </div>
+                  
+                  <p className="text-white text-lg font-medium mb-2 break-all line-clamp-4">
+                     {manualResult.data}
+                  </p>
+                  
+                  <div className="flex gap-3 mt-6">
+                     <button 
+                        onClick={closeManualResult}
+                        className="flex-1 py-3 rounded-xl bg-neutral-800 text-neutral-300 font-medium hover:bg-neutral-700 transition-colors"
+                     >
+                        İptal
+                     </button>
+                     <button 
+                        onClick={() => {
+                           performAction(manualResult.data, manualResult.type);
+                           closeManualResult();
+                        }}
+                        className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-500 transition-colors flex items-center justify-center gap-2"
+                     >
+                        <span>Aç / Git</span>
+                        <ArrowRight className="w-4 h-4" />
+                     </button>
+                  </div>
+               </div>
+            </div>
+          )}
+          
           {/* Top Controls Container */}
           <div className="absolute top-8 left-0 right-0 px-6 flex justify-between z-50 pointer-events-none">
-             {/* Sound Toggle - Left */}
-             <button
-               onClick={() => setIsMuted(!isMuted)}
-               className={`p-3 rounded-full backdrop-blur-md transition-all shadow-xl border pointer-events-auto ${
-                 isMuted 
-                   ? 'bg-black/50 text-white/70 border-white/10' 
-                   : 'bg-white text-black border-white shadow-white/20'
-               }`}
-             >
-               {isMuted ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
-             </button>
+             
+             {/* Left Group: Feedback & AutoToggle */}
+             <div className="flex gap-3 pointer-events-auto">
+                 {/* Feedback Toggle */}
+                 <button
+                   onClick={cycleFeedbackMode}
+                   className={`p-3 rounded-full backdrop-blur-md transition-all shadow-xl border flex items-center justify-center ${
+                     feedbackMode !== FeedbackMode.SILENT
+                       ? 'bg-white text-black border-white shadow-white/20' 
+                       : 'bg-black/50 text-white/70 border-white/10'
+                   }`}
+                 >
+                   {feedbackMode === FeedbackMode.SOUND && <Volume2 className="w-6 h-6" />}
+                   {feedbackMode === FeedbackMode.VIBRATE && <Smartphone className="w-6 h-6" />}
+                   {feedbackMode === FeedbackMode.SILENT && <VolumeX className="w-6 h-6" />}
+                 </button>
+
+                 {/* Auto Action Toggle */}
+                 <button
+                   onClick={() => setAutoAction(!autoAction)}
+                   className={`p-3 rounded-full backdrop-blur-md transition-all shadow-xl border flex items-center justify-center ${
+                     autoAction 
+                       ? 'bg-emerald-500 text-white border-emerald-400 shadow-emerald-500/30' 
+                       : 'bg-black/50 text-amber-400 border-amber-400/30'
+                   }`}
+                 >
+                   {autoAction ? <Rocket className="w-6 h-6" /> : <MousePointerClick className="w-6 h-6" />}
+                 </button>
+             </div>
 
              {/* Torch Button - Right */}
              {hasTorch && (
